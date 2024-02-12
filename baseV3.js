@@ -52,3 +52,100 @@ C'est pourquoi je dis qu'une paire V3 est constituée de plusieurs petites paire
 
 https://defi-lab.xyz/uniswapv3simulator
 */
+
+// Pour gérer la transition entre les fourchettes de prix, 
+// simplifier la gestion des liquidités et éviter les erreurs d'arrondi, 
+// Uniswap V3 utilise ces nouveaux concepts :
+
+// let L = Math.sqrt(montantTokenX * montantTokenY)
+// let P;
+// Math.sqrt(P) = Math.sqrt(y / x)
+
+
+/* Moyenne géométrique (√xy): C'est une sorte de moyenne entre les quantités de deux tokens dans le pool.
+Si on multiplie cette moyenne par elle-même, on obtient le produit des deux réserves, 
+qui est k. Cela aide à comprendre la relation entre les tokens dans le pool. 
+
+Price (√P): Le prix d'un token en termes d'un autre token. Uniswap V3 utilise la 
+racine carrée du prix (√P) pour simplifier les calculs. Si nous avons deux tokens, 
+A et B, et que le prix de A en termes de B est de 2, alors √P serait la 
+racine carrée de 2.
+
+Pourquoi utiliser √P au lieu de P ?: Il y a deux raisons principales. 
+Premièrement, calculer des racines carrées directement sur la blockchain peut 
+causer des erreurs d'arrondi. Deuxièmement, utiliser √P simplifie les formules 
+et les calculs sur la plateforme.
+
+Changement de ∆y / ∆√P: Cela montre comment la quantité de tokens échangés 
+change en fonction du changement de prix. C'est un peu comme dire 
+"si le prix d'un token augmente ou diminue, voici comment cela affecte la 
+quantité de ce token que vous pouvez obtenir".
+
+L = (Δy) / (Δ√P)
+
+Là encore, nous n'avons pas besoin de calculer les prix réels - nous pouvons calculer
+immédiatement le montant de la production. De plus, comme nous n'allons pas suivre 
+et stocker x et y, notre calcul sera basé uniquement sur L et √P
+
+La formule ci-dessus nous permet de trouver Δy : Δy = Δ√PL
+
+Comme nous l'avons vu plus haut, les prix dans un pool sont réciproques. 
+Ainsi, Δx est : Δ(1 / √P)L
+
+L et √P nous permettent de ne pas stocker et mettre à jour les réserves du pool. 
+De plus, nous n'avons pas besoin de calculer √P à chaque fois, car nous pouvons 
+toujours trouver Δ√P et sa réciproque.
+*/
+
+let montantTokenX = 400;
+let montantTokenY = 10;
+let deltaY = 2; // Changement donné pour le token Y
+
+// Calcul de la liquidité L initiale
+let L = Math.sqrt(montantTokenX * montantTokenY); // Racine carrée de K
+
+// Le nouveau montant de Y après le changement deltaY
+let newY = montantTokenY + deltaY;
+
+// Pour maintenir la constance du produit K, calculons le nouveau montant de X
+// K = montantTokenX * montantTokenY = newX * newY
+let K = montantTokenX * montantTokenY;
+let newX = K / newY;
+
+// La variation de la quantité du token X (Delta x) est la différence entre l'ancien X et le nouveau X
+let deltaX = montantTokenX - newX;
+
+// Calcul des prix avant et après le trade
+let prixAvant = montantTokenY / montantTokenX;
+let prixAprès = newY / newX;
+
+console.log("Le nouveau montant de Token X après le trade est:", newX);
+console.log("La variation de la quantité du token X (Delta x) est:", deltaX);
+console.log("Le prix avant le trade (Token Y par Token X) est:", prixAvant);
+console.log("Le prix après le trade (Token Y par Token X) est:", prixAprès);
+
+/* TICKS 
+Dans Uniswap V3, plutôt que d'avoir un continuum de prix possibles, les prix sont 
+divisés en ce qu'on appelle des "ticks". Chaque tick est un point de prix discret 
+et chaque tick a un indice qui correspond à un certain prix.
+
+La formule donnée pour le prix à un tick i est :
+p(i)=1.0001^i (comprendre : exposant i)
+
+Où p(i) est le prix au tick i. Chaque augmentation d'un tick index signifie 
+que le prix est multiplié par 1.0001. Cela a une propriété 
+intéressante : la différence de prix entre deux ticks adjacents est d'environ 0.01%, 
+ou un "basis point". Un "basis point" est un terme financier qui signifie 1/100ème de 1
+pour cent, ou 0.0001.
+
+Uniswap V3 ne stocke pas directement le prix P, mais la racine carrée du prix √P. 
+Cela simplifie les calculs et réduit les erreurs potentielles. 
+Ainsi, la formule pour le prix devient :
+
+√(p(i)) = √(1.0001^i) = 1.0001^(i/2)
+
+Cela signifie que si i = 0, alors √(p(0)) = 1, ce qui a du sens car multiplier 
+quelque chose par 1 ne change pas sa valeur. Si i = 1, alors √(p(1)) est légèrement 
+plus grand que 1 (environ 1.00005), et si i = −1, alors √(p(-1)) est légèrement 
+inférieur à 1 (environ 0.99995).
+*/
