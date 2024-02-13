@@ -521,3 +521,88 @@ Bien entendu, il ne suffit pas de tester uniquement les scénarios réussis. Nou
 - Les ticks supérieurs et inférieurs sont trop grands ou trop petits.
 - La liquidité fournie est nulle.
 - Le fournisseur de liquidité n'a pas assez de jetons.
+
+## Premier Swap
+
+Maintenant que nous disposons de liquidités, nous pouvons procéder à notre premier échange !
+
+## Calculer les montants des swaps
+
+La première étape, bien sûr, est de déterminer comment calculer les montants des échanges. Encore une fois, choisissons et codons en dur un montant d'USDC que nous allons échanger contre de l'ETH. Nous allons acheter de l'ETH pour 42 USDC.
+
+Après avoir décidé combien de tokens nous voulons vendre, nous devons calculer combien de tokens nous obtiendrons en échange. Dans Uniswap V2, nous aurions utilisé les réserves du pool actuel, mais dans Uniswap V3, nous avons L et √P et nous savons que lors d'un échange à l'intérieur d'une fourchette de prix, seul  
+√P change et L reste inchangé (Uniswap V3 agit exactement comme V2 lorsque l'échange se fait uniquement à l'intérieur d'une fourchette de prix). Nous savons également que :
+
+```
+L = Δy / Δ√P
+```
+
+Et... nous connaissons Δy ! Il s'agit des 42 USDC que nous allons échanger ! Ainsi, nous pouvons déterminer comment la vente de 42 USDC affectera la valeur actuelle de √P actuel, compte tenu de L :
+
+```
+Δ√P = Δy / L
+```
+
+Dans Uniswap V3, nous choisissons le prix auquel nous voulons que notre échange aboutisse (rappelons que l'échange modifie le prix actuel, c'est-à-dire qu'il déplace le prix actuel le long de la courbe). Connaissant le prix cible, le contrat calculera la quantité de jetons d'entrée qu'il doit nous prendre et la quantité respective de jetons de sortie qu'il nous donnera.
+
+Insérons nos chiffres dans la formule ci-dessus :
+
+```
+Δ√P = 42USDC / 1517882343751509868544 = 2192253463713690532467206957
+```
+
+Après l'avoir ajouté à l'actuel √P actuel, on obtient le prix cible :
+
+```
+√(P cible) = √(P courant) + Δ√P
+√(P cible) = 5604469350942327889444743441197
+```
+
+Pour calculer le prix cible en Python :
+
+```python
+amount_in = 42 * eth
+price_diff = (amount_in * q96) // liq
+price_next = sqrtp_cur + price_diff
+print("New price:", (price_next / q96) ** 2)
+print("New sqrtP:", price_next)
+print("New tick:", price_to_tick((price_next / q96) ** 2))
+# New price: 5003.913912782393
+# New sqrtP: 5604469350942327889444743441197
+# New tick: 85184
+```
+
+Après avoir trouvé le prix cible, nous pouvons calculer les montants des jetons en utilisant les fonctions de calcul des montants d'un chapitre précédent :
+
+```
+x = L(√(Pb) - √(Pa)) / √(Pb) * √(Pa)
+y = L(√(Pb) - √(Pa))
+```
+
+En Python :
+
+```python
+amount_in = calc_amount1(liq, price_next, sqrtp_cur)
+amount_out = calc_amount0(liq, price_next, sqrtp_cur)
+
+print("USDC in:", amount_in / eth)
+print("ETH out:", amount_out / eth)
+# USDC in: 42.0
+# ETH out: 0.008396714242162444
+```
+
+Pour vérifier les montants, rappelons une autre formule :
+
+Δx = Δ(1/√P)L
+
+En utilisant cette formule, nous pouvons trouver le montant d'Eth que nous achetons, Δx, connaissant le changement de prix Δ(1/√P) et la liquidité L. Cependant, soyez prudents : Δ(1/√P) n'est pas 1/(Δ√P). La première est la variation du prix de l'ETH, et elle peut être calculée à l'aide de l'expression suivante :
+
+```
+Δ(1/√P) = 1/√(P cible) - 1/√(P courant)
+```
+
+Heureusement, nous connaissons déjà toutes les valeurs, et nous pouvons donc les introduire immédiatement (cela risque de ne pas tenir sur votre écran !):
+
+```
+Δ(1/√P) = (1 / 5604469350942327889444743441197) - (1 / 5602277097478614198912276234240) = −6.982190286589445e-35∗2^96 = −0.00000553186106731426
+```
