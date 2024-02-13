@@ -606,3 +606,549 @@ Heureusement, nous connaissons déjà toutes les valeurs, et nous pouvons donc l
 ```
 Δ(1/√P) = (1 / 5604469350942327889444743441197) - (1 / 5602277097478614198912276234240) = −6.982190286589445e-35∗2^96 = −0.00000553186106731426
 ```
+
+Maintenant, trouvons Δx :
+
+```
+Δx = −0.00000553186106731426 ∗ 1517882343751509868544 = −8396714242162698
+```
+
+Ce qui représente 0,008396714242162698 ETH, et qui est très proche du montant que nous avons trouvé ci-dessus ! Notez que ce montant est négatif puisque nous le retirons de la pool.
+
+## Implémentation d'un Swap
+
+L'échange est implémenté dans la fonction "swap" :
+
+```solidity 
+function swap(address recipient)
+    public
+    returns (int256 amount0, int256 amount1)
+{
+    ...
+```
+
+À l’heure actuelle, il suffit d’un destinataire, qui est un destinataire de jetons.
+
+Tout d’abord, nous devons trouver le prix cible et le tick, ainsi que calculer les montants des jetons. Encore une fois, nous allons simplement coder en dur les valeurs que nous avons calculées plus tôt pour garder les choses aussi simples que possible :
+
+```solidity 
+...
+int24 nextTick = 85184;
+uint160 nextPrice = 5604469350942327889444743441197;
+
+amount0 = -0.008396714242162444 ether;
+amount1 = 42 ether;
+...
+```
+
+Ensuite, nous devons mettre à jour le tick actuel et "sqrtP" puisque le trading affecte le prix actuel :
+
+```solidity
+...
+(slot0.tick, slot0.sqrtPriceX96) = (nextTick, nextPrice);
+...
+```
+
+Ensuite, le contrat envoie des jetons au destinataire et permet à l'appelant de transférer le montant saisi dans le contrat :
+
+```solidity
+...
+IERC20(token0).transfer(recipient, uint256(-amount0));
+
+uint256 balance1Before = balance1();
+IUniswapV3SwapCallback(msg.sender).uniswapV3SwapCallback(
+    amount0,
+    amount1
+);
+if (balance1Before + uint256(amount1) < balance1())
+    revert InsufficientInputAmount();
+...
+```
+
+Encore une fois, nous utilisons un rappel pour transmettre le contrôle à l'appelant et le laisser transférer les jetons. Après cela, nous vérifions que le solde du pool est correct et inclut le montant saisi.
+
+Enfin, le contrat émet un événement "Swap" pour rendre le swap détectable. L'événement comprend toutes les informations sur l'échange :
+
+```solidity
+...
+emit Swap(
+    msg.sender,
+    recipient,
+    amount0,
+    amount1,
+    slot0.sqrtPriceX96,
+    liquidity,
+    slot0.tick
+);
+```
+
+Et c'est tout! La fonction envoie simplement une certaine quantité de jetons à l'adresse du destinataire spécifiée et attend un certain nombre d'autres jetons en échange.
+
+## Test du swap 
+
+Maintenant, nous pouvons tester la fonction swap. Dans le même fichier de test, créez la fonction "testSwapBuyEthfonction" et configurez le scénario de test. Ce cas de test utilise les mêmes paramètres que "testMintSuccess" :
+
+```solidity
+function testSwapBuyEth() public {
+    TestCaseParams memory params = TestCaseParams({
+        wethBalance: 1 ether,
+        usdcBalance: 5000 ether,
+        currentTick: 85176,
+        lowerTick: 84222,
+        upperTick: 86129,
+        liquidity: 1517882343751509868544,
+        currentSqrtP: 5602277097478614198912276234240,
+        shouldTransferInCallback: true,
+        mintLiqudity: true
+    });
+    (uint256 poolBalance0, uint256 poolBalance1) = setupTestCase(params);
+
+    ...
+```
+
+Les prochaines étapes seront cependant différentes.
+
+Nous n'allons pas tester que la liquidité a été correctement ajoutée au pool puisque nous avons testé cette fonctionnalité dans les autres cas de tests.
+
+Pour effectuer le swap test, nous avons besoin de 42 USDC :
+
+```solidity
+token1.mint(address(this), 42 ether);
+```
+
+Avant d'effectuer l'échange, nous devons nous assurer que nous pouvons transférer les jetons vers le contrat de pool lorsqu'il les demande :
+
+```solidity
+function uniswapV3SwapCallback(int256 amount0, int256 amount1) public {
+    if (amount0 > 0) {
+        token0.transfer(msg.sender, uint256(amount0));
+    }
+
+    if (amount1 > 0) {
+        token1.transfer(msg.sender, uint256(amount1));
+    }
+}
+```
+
+Étant donné que les montants lors d'un swap peuvent être positifs (le montant envoyé à la pool) et négatifs (le montant retiré de la pool), lors du rappel, nous souhaitons uniquement envoyer le montant positif, c'est-à-dire le montant que nous négocions.
+
+Maintenant, nous pouvons appeler "swap" :
+
+```solidity
+(int256 amount0Delta, int256 amount1Delta) = pool.swap(address(this));
+```
+
+La fonction renvoie les montants de jetons utilisés dans le swap, et nous pouvons les vérifier immédiatement :
+
+```solidity
+assertEq(amount0Delta, -0.008396714242162444 ether, "invalid ETH out");
+assertEq(amount1Delta, 42 ether, "invalid USDC in");
+```
+
+Ensuite, nous devons nous assurer que les jetons ont été transférés depuis l'appelant :
+
+```solidity
+assertEq(
+    token0.balanceOf(address(this)),
+    uint256(userBalance0Before - amount0Delta),
+    "invalid user ETH balance"
+);
+assertEq(
+    token1.balanceOf(address(this)),
+    0,
+    "invalid user USDC balance"
+);
+```
+
+Et envoyé au contrat de pool :
+
+```solidity
+assertEq(
+    token0.balanceOf(address(pool)),
+    uint256(int256(poolBalance0) + amount0Delta),
+    "invalid pool ETH balance"
+);
+assertEq(
+    token1.balanceOf(address(pool)),
+    uint256(int256(poolBalance1) + amount1Delta),
+    "invalid pool USDC balance"
+);
+```
+
+Enfin, nous vérifions que l'état du pool a été correctement mis à jour :
+
+```solidity
+(uint160 sqrtPriceX96, int24 tick) = pool.slot0();
+assertEq(
+    sqrtPriceX96,
+    5604469350942327889444743441197,
+    "invalid current sqrtP"
+);
+assertEq(tick, 85184, "invalid current tick");
+assertEq(
+    pool.liquidity(),
+    1517882343751509868544,
+    "invalid current liquidity"
+);
+```
+
+Notez que le swap ne modifie pas la liquidité actuelle – dans un chapitre ultérieur, nous verrons quand cela la modifie.
+
+## Manager Contract
+
+Avant de déployer notre contrat de pool, nous devons résoudre un problème. Comme vous vous en souvenez, les contrats Uniswap V3 sont divisés en deux catégories :
+
+- Contrats de base qui implémentent les fonctions de base et ne fournissent pas d'interfaces conviviales.
+- Contrats de périphérie qui mettent en œuvre des interfaces conviviales pour les contrats principaux.
+
+Le contrat de pool est un contrat de base, il n'est pas censé être convivial et flexible. Il attend de l'appelant qu'il fasse tous les calculs (prix, montants) et qu'il fournisse les paramètres d'appel appropriés. Il n'utilise pas non plus "transferFrom" de ERC20 pour transférer les jetons de l'appelant. Au lieu de cela, il utilise deux rappels :
+
+- "uniswapV3MintCallback", qui est appelé lors du mint de liquidités ;
+- "uniswapV3SwapCallback", qui est appelé lors du swap de jetons.
+
+Lors de nos tests, nous avons implémenté ces rappels dans le contrat de test. Comme seul un contrat peut les mettre en œuvre, le contrat de pool ne peut pas être appelé par les utilisateurs réguliers (adresses non contractuelles). C'est bon. Mais plus maintenant.
+
+Notre prochaine étape consiste à déployer le contrat de pool sur une blockchain locale et à interagir avec elle à partir d'une application frontale. Ainsi, nous devons construire un contrat qui permettra aux adresses non contractuelles d'interagir avec le pool. Faisons-le maintenant !
+
+## Flux de travail
+
+Voici comment fonctionnera le contrat manager :
+
+- Pour générer des liquidités, nous approuverons la dépense de jetons dans le cadre du contrat manager.
+- Nous appellerons ensuite la fonction "mint" du contrat manager et lui transmettrons les paramètres de mint, ainsi que l'adresse de la pool dans laquelle nous souhaitons fournir des liquidités.
+- Le contrat manager appellera la fonction "mint" de la pool et mettra en œuvre "uniswapV3MintCallback". Il aura la permission d'envoyer nos jetons au contrat de pool.
+- Pour échanger des jetons, nous approuverons également la dépense des jetons dans le contrat manager.
+- Nous appellerons ensuite la fonction "swap" du contrat manager et, comme pour le minting, elle transmettra l'appel à la pool. Le contrat manager enverra nos jetons au contrat pool, et le contrat pool les échangera et nous enverra le montant de sortie.
+
+Ainsi, le contrat manager fera office d’intermédiaire entre les utilisateurs et les pools.
+
+## Transmettre des données aux callbacks
+
+Avant d'implémenter le contrat manager, nous devons mettre à jour le contrat pool.
+
+Le contrat manager fonctionnera avec n'importe quelle pool et permettra à n'importe quelle adresse de l'appeler. Pour ce faire, nous devons mettre à jour les callbacks : nous voulons leur passer différentes adresses de pools et d'utilisateurs. Examinons notre implémentation actuelle de "uniswapV3MintCallback" (dans le contrat de test) :
+
+```solidity
+function uniswapV3MintCallback(uint256 amount0, uint256 amount1) public {
+    if (transferInMintCallback) {
+        token0.transfer(msg.sender, amount0);
+        token1.transfer(msg.sender, amount1);
+    }
+}
+```
+
+Voici les points clés :
+
+- La fonction transfère les jetons appartenant au contrat de test - nous voulons qu'elle transfère les jetons de l'appelant en utilisant "transferFrom".
+- La fonction connaît token0 et token1, qui seront différents pour chaque pool.
+
+Idée : nous devons changer les arguments de la callback afin de pouvoir passer les adresses de l'utilisateur et de la pool.
+
+Maintenant, regardons le callback swap :
+
+```solidity
+function uniswapV3SwapCallback(int256 amount0, int256 amount1) public {
+    if (amount0 > 0 && transferInSwapCallback) {
+        token0.transfer(msg.sender, uint256(amount0));
+    }
+
+    if (amount1 > 0 && transferInSwapCallback) {
+        token1.transfer(msg.sender, uint256(amount1));
+    }
+}
+```
+
+Identiquement, il transfère les tokens du contrat de test et connaît token0 et token1.
+
+Pour passer les données supplémentaires aux callbacks, nous devons d'abord les passer à mint et swap (puisque les callbacks sont appelés à partir de ces fonctions). Cependant, comme ces données supplémentaires ne sont pas utilisées dans les fonctions et pour ne pas rendre leurs arguments plus compliqués, nous allons encoder les données supplémentaires en utilisant abi.encode().
+
+Définissons les données supplémentaires comme une structure :
+
+```solidity
+// src/UniswapV3Pool.sol
+...
+struct CallbackData {
+    address token0;
+    address token1;
+    address payer;
+}
+...
+```
+
+Puis transmettre les données encodées aux callbacks :
+
+```solidity
+function mint(
+    address owner,
+    int24 lowerTick,
+    int24 upperTick,
+    uint128 amount,
+    bytes calldata data // <--- New line
+) external returns (uint256 amount0, uint256 amount1) {
+    ...
+    IUniswapV3MintCallback(msg.sender).uniswapV3MintCallback(
+        amount0,
+        amount1,
+        data // <--- New line
+    );
+    ...
+}
+
+function swap(address recipient, bytes calldata data) // <--- `data` added
+    public
+    returns (int256 amount0, int256 amount1)
+{
+    ...
+    IUniswapV3SwapCallback(msg.sender).uniswapV3SwapCallback(
+        amount0,
+        amount1,
+        data // <--- New line
+    );
+    ...
+}
+```
+
+Nous pouvons maintenant lire les données supplémentaires dans les rappels du contrat de test.
+
+```solidity
+function uniswapV3MintCallback(
+    uint256 amount0,
+    uint256 amount1,
+    bytes calldata data
+) public {
+    if (transferInMintCallback) {
+        UniswapV3Pool.CallbackData memory extra = abi.decode(
+            data,
+            (UniswapV3Pool.CallbackData)
+        );
+
+        IERC20(extra.token0).transferFrom(extra.payer, msg.sender, amount0);
+        IERC20(extra.token1).transferFrom(extra.payer, msg.sender, amount1);
+    }
+}
+```
+
+## Implémentation du contrat de gestionnaire
+
+Outre l'implémentation des callbacks, le contrat manager ne fera pas grand chose : il redirigera simplement les appels vers un contrat pool. Il s'agit d'un contrat très minimaliste pour le moment :
+
+```solidity
+pragma solidity ^0.8.14;
+
+import "../src/UniswapV3Pool.sol";
+import "../src/interfaces/IERC20.sol";
+
+contract UniswapV3Manager {
+    function mint(
+        address poolAddress_,
+        int24 lowerTick,
+        int24 upperTick,
+        uint128 liquidity,
+        bytes calldata data
+    ) public {
+        UniswapV3Pool(poolAddress_).mint(
+            msg.sender,
+            lowerTick,
+            upperTick,
+            liquidity,
+            data
+        );
+    }
+
+    function swap(address poolAddress_, bytes calldata data) public {
+        UniswapV3Pool(poolAddress_).swap(msg.sender, data);
+    }
+
+    function uniswapV3MintCallback(...) {...}
+    function uniswapV3SwapCallback(...) {...}
+}
+```
+
+Les callbacks sont identiques à ceux du contrat de test, à l'exception du fait qu'il n'y a pas de flags transferInMintCallback et transferInSwapCallback puisque le contrat manager transfère toujours les tokens.
+
+Nous sommes maintenant prêts à déployer et à intégrer une application frontale !
+
+## Déploiement
+
+Très bien, notre contrat de pool est terminé. Voyons maintenant comment nous pouvons le déployer sur un réseau Ethereum local afin de pouvoir l'utiliser ultérieurement à partir d'une application frontale.
+
+## Exécuter une blockchain locale
+
+Anvil ne nécessite pas de configuration, nous pouvons l'exécuter avec une seule commande et cela fera :
+
+```anvil --code-size-limit 50000```
+
+Nous allons écrire de gros contrats qui ne rentrent pas dans la limite de taille du contrat Ethereum (qui est 24576 octets), nous devons donc dire à Anvil d'autoriser des contrats intelligents plus importants.
+
+Anvil fonctionne avec un seul nœud Ethereum, ce n'est donc pas un réseau, mais ce n'est pas grave. Par défaut, il crée 10 comptes avec 10 000 ETH dans chacun d'eux. Il imprime les adresses et les clés privées associées lorsqu'il démarre - nous utiliserons l'une de ces adresses lors du déploiement et de l'interaction avec le contrat à partir de l'interface utilisateur.
+
+## Premier déploiement
+
+Le déploiement d'un contrat consiste essentiellement à
+
+- Compiler le code source en bytecode EVM.
+- Envoyer une transaction avec le bytecode.
+- Créer une nouvelle adresse, exécuter la partie constructeur du bytecode et stocker le bytecode déployé sur l'adresse. Cette étape est réalisée automatiquement par un nœud Ethereum lorsque la transaction de création de votre contrat est minée.
+
+Le déploiement se compose généralement de plusieurs étapes : préparation des paramètres, déploiement des contrats auxiliaires, déploiement des contrats principaux, initialisation des contrats, etc. Les scripts permettent d'automatiser ces étapes, et nous allons écrire des scripts dans Solidity !
+
+Créez le contrat scripts/DeployDevelopment.sol avec ce contenu :
+
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.14;
+
+import "forge-std/Script.sol";
+
+contract DeployDevelopment is Script {
+    function run() public {
+      ...
+    }
+}
+```
+
+Il ressemble beaucoup au contrat de test, à la seule différence qu'il hérite du contrat Script, et non de Test. Et, par convention, nous devons définir la fonction run qui sera le corps de notre script de déploiement. Dans la fonction run, nous définissons d'abord les paramètres du déploiement :
+
+```solidity
+uint256 wethBalance = 1 ether;
+uint256 usdcBalance = 5042 ether;
+int24 currentTick = 85176;
+uint160 currentSqrtP = 5602277097478614198912276234240;
+```
+
+Il s'agit des mêmes valeurs que celles que nous avons utilisées précédemment. Remarquez que nous sommes sur le point de frapper 5042 USDC - soit 5000 USDC que nous fournirons comme liquidité dans la pool et 42 USDC que nous vendrons dans le cadre d'un swap.
+
+Ensuite, nous définissons l'ensemble des étapes qui seront exécutées dans le cadre de la transaction de déploiement (en fait, chacune des étapes sera une transaction distincte). Pour cela, nous utilisons les cheat codes startBroadcast/endBroadcast :
+
+```solidity
+vm.startBroadcast();
+...
+vm.stopBroadcast();
+```
+
+Tout ce qui se passe après le cheat code broadcast() ou entre startBroadcast()/stopBroadcast() est converti en transactions et ces transactions sont envoyées au nœud qui exécute le script.
+
+Entre les cheat codes de diffusion, nous placerons les étapes de déploiement proprement dites. Tout d'abord, nous devons déployer les jetons :
+
+```solidity
+ERC20Mintable token0 = new ERC20Mintable("Wrapped Ether", "WETH", 18);
+ERC20Mintable token1 = new ERC20Mintable("USD Coin", "USDC", 18);
+```
+
+Nous ne pouvons pas déployer le pool sans avoir de tokens, nous devons donc d'abord les déployer.
+
+Puisque nous déployons sur un réseau de développement local, nous devons déployer les tokens nous-mêmes. Dans le réseau principal et les réseaux de test publics (Ropsten, Goerli, Sepolia), les jetons sont déjà créés. Ainsi, pour les déployer sur ces réseaux, nous devrons écrire des scripts de déploiement spécifiques à ces réseaux.
+
+L'étape suivante consiste à déployer le contrat de pool :
+
+```solidity
+UniswapV3Pool pool = new UniswapV3Pool(
+    address(token0),
+    address(token1),
+    currentSqrtP,
+    currentTick
+);
+```
+
+L'étape suivante est le déploiement du contrat manager :
+
+```solidity
+UniswapV3Manager manager = new UniswapV3Manager();
+```
+
+Enfin, nous pouvons monnayer une certaine quantité d'ETH et d'USDC à notre adresse :
+
+```solidity
+token0.mint(msg.sender, wethBalance);
+token1.mint(msg.sender, usdcBalance);
+```
+
+msg.sender dans les scripts Foundry est l'adresse qui envoie les transactions dans le bloc de diffusion. Nous pourrons la définir lors de l'exécution des scripts.
+
+Enfin, à la fin du script, ajoutez quelques appels console.log pour imprimer les adresses des contrats déployés :
+
+```solidity
+console.log("WETH address", address(token0));
+console.log("USDC address", address(token1));
+console.log("Pool address", address(pool));
+console.log("Manager address", address(manager));
+```
+
+Très bien, lançons le script (assurez-vous qu'Anvil tourne dans une autre fenêtre de terminal) :
+
+```
+forge script script/DeployDevelopment.s.sol --rpc-url http://localhost:8545 --broadcast --private-key $PRIVATE_KEY  --code-size-limit 50000
+```
+
+Nous augmentons à nouveau la taille du code du contrat intelligent afin que le compilateur n'échoue pas.
+
+--broadcast active la diffusion des transactions. Elle n'est pas activée par défaut car tous les scripts n'envoient pas de transactions. --fork-url définit l'adresse du noeud vers lequel envoyer les transactions. --private-key définit le portefeuille de l'expéditeur : une clé privée est nécessaire pour signer les transactions. Vous pouvez choisir n'importe laquelle des clés privées imprimées par Anvil au démarrage :
+
+0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+
+Le déploiement prend quelques secondes. À la fin, vous verrez une liste des transactions envoyées. Les accusés de réception des transactions sont également enregistrés dans le dossier de diffusion. Dans Anvil, vous verrez également de nombreuses lignes avec eth_sendRawTransaction, eth_getTransactionByHash, et eth_getTransactionReceipt - après avoir envoyé des transactions à Anvil, Forge utilise l'API JSON-RPC pour vérifier leur statut et obtenir les résultats de l'exécution de la transaction (reçus).
+
+Félicitations ! Vous venez de déployer un contrat intelligent !
+
+## Interagir avec les contrats, ABI
+
+### Solde des jetons
+
+Vérifions le solde de WETH de l'adresse du déployeur. La signature de la fonction est balanceOf(address) (comme défini dans l'ERC-20). Pour trouver l'ID de cette fonction (son sélecteur), nous allons la hacher et prendre les quatre premiers octets :
+
+```cast keccak "balanceOf(address)"| cut -b 1-10```
+
+Pour transmettre l'adresse, il suffit de l'ajouter au sélecteur de fonction (et d'ajouter un remplissage à gauche jusqu'à 32 chiffres, puisque les adresses prennent 32 octets dans les données d'appel de fonction) :
+
+```0x70a08231000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266```
+
+0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266 est l'adresse dont nous allons vérifier le solde. C'est notre adresse, le premier compte dans Anvil.
+
+Ensuite, nous exécutons la méthode JSON-RPC eth_call pour passer l'appel. Notez qu'il n'est pas nécessaire d'envoyer une transaction - ce point d'accès est utilisé pour lire les données des contrats
+
+```$ params='{"from":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266","to":"0xe7f1725e7734ce288f8367e1bb143e90bb3f0512","data":"0x70a08231000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266"}'
+
+$ curl -X POST -H 'Content-Type: application/json' \
+  --data '{"id":1,"jsonrpc":"2.0","method":"eth_call","params":['"$params"',"latest"]}' \
+  http://127.0.0.1:8545
+
+{"jsonrpc":"2.0","id":1,"result":"0x00000000000000000000000000000000000000000000011153ce5e56cf880000"}
+```
+
+L'adresse "to" est le jeton USDC. Elle est imprimée par le script de déploiement et peut être différente dans votre cas.
+
+Les nœuds Ethereum renvoient les résultats sous forme d'octets bruts. Pour les analyser, nous devons connaître le type de la valeur renvoyée. Dans le cas de la fonction balanceOf, le type de la valeur retournée est uint256. En utilisant cast, nous pouvons la convertir en nombre décimal et ensuite la convertir en éther :
+
+```$ cast --to-dec 0x00000000000000000000000000000000000000000000011153ce5e56cf880000| cast --from-wei
+5042.000000000000000000
+```
+
+Le solde est correct ! Nous avons frappé 5042 USDC à notre adresse.
+
+### Tick et prix actuels
+
+L'exemple ci-dessus est une démonstration d'appels de contrat de bas niveau. En général, on ne fait jamais d'appels via curl et on utilise un outil ou une bibliothèque qui facilite les choses. Et Cast peut encore nous aider ici !
+
+Obtenons le prix actuel et le tick d'un pool en utilisant cast :
+
+```$ cast call POOL_ADDRESS "slot0()"| xargs cast --abi-decode "a()(uint160,int24)"
+
+5602277097478614198912276234240
+85176
+```
+
+C'est bien ! La première valeur est la valeur actuelle du √P actuel et la seconde valeur est le tick actuel.
+
+Puisque --abi-decode requiert une signature de fonction complète, nous devons spécifier "a()" même si nous voulons seulement décoder la sortie de la fonction.
+
+### ABI
+
+Pour simplifier l'interaction avec les contrats, le compilateur Solidity peut produire une ABI, Application Binary Interface.
+
+L'ABI est un fichier JSON qui contient la description de toutes les méthodes et événements publics d'un contrat.   L'objectif de ce fichier est de faciliter l'encodage des paramètres des fonctions et le décodage des valeurs de retour. Pour obtenir l'ABI avec Forge, utilisez la commande suivante :
+
+```forge inspect UniswapV3Pool abi```
+
+N'hésitez pas à parcourir le fichier pour mieux comprendre son contenu.
+
+## Interface utilisateur
