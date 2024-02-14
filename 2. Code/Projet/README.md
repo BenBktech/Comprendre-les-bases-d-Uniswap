@@ -119,7 +119,7 @@ Notre fonction "mint" prendra :
 
 Notez que l'utilisateur spécifie L, pas les montants symboliques réels. Ce n'est bien sûr pas très pratique, mais rappelez-vous que le contrat "Pool" est un contrat de base : il n'est pas destiné à être convivial car il doit implémenter uniquement la logique de base. Dans un chapitre ultérieur, nous établirons un contrat d'assistance qui convertira les montants de jetons en L avant d'appeler "Pool.mint".
 
-Décrivons un plan rapide du fonctionnement du monnayage :
+Décrivons un plan rapide du fonctionnement du minting :
 
 - Un utilisateur spécifie une fourchette de prix et un montant de liquidité ;
 - Le contrat met à jour les "ticks", "positions" les cartographies ;
